@@ -1,74 +1,60 @@
-var express = require('express');
-var bodyParser = require('body-parser');
-var mongoose = require('mongoose');
-var session = require('express-session');
-var app = express();
-require('./seed.js');
-
-
+'use strict'
 
 /*
-//use sessions for tracking logins
-app.use(session({
-  secret: 'treehouse loves you',
-  resave: true,
-  saveUninitialized: false
-}));
-// make user ID available in templates
-app.use(function (req, res, next) {
-  res.locals.currentUser = req.session.userId;
-  next();
-});
+var cl = console.log
+console.log = function(){
+  console.trace()
+  cl.apply(console,arguments)
+}
 */
 
+process.env.NODE_CONFIG_DIR = './config/env'
 
-// mongodb connection
-mongoose.connect("mongodb://localhost:27017/newvolunteer");
-var db = mongoose.connection;
-// mongo error
-db.on('error', console.error.bind(console, 'connection error:'));
+// Requires meanio .
+var mean = require('meanio')
+var cluster = require('cluster')
+var deferred = require('q').defer()
+var debug = require('debug')('cluster')
 
+// Code to run if we're in the master process or if we are not in debug mode/ running tests
 
-// parse incoming requests
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: false }));
+if ((cluster.isMaster) &&
+  (process.execArgv.indexOf('--debug') < 0) &&
+  (process.env.NODE_ENV !== 'test') && (process.env.NODE_ENV !== 'development') &&
+  (process.execArgv.indexOf('--singleProcess') < 0)) {
+  // if (cluster.isMaster) {
 
-// serve static files from /public
-app.use(express.static(__dirname + '/public'));
+  debug(`Production Environment`)
+  // Count the machine's CPUs
+  var cpuCount = process.env.CPU_COUNT || require('os').cpus().length
 
-// view engine setup
-app.set('view engine', 'pug');
+  // Create a worker for each CPU
+  for (var i = 0; i < cpuCount; i += 1) {
+    debug(`forking ${i}`)
+    cluster.fork()
+  }
 
-app.set('views', __dirname + '\\views');
+  // Listen for dying workers
+  cluster.on('exit', function (worker) {
+    // Replace the dead worker, we're not sentimental
+    debug(`Worker ${worker.id} died :(`)
+    cluster.fork()
+  })
 
-//for trying to render the index.pug file
-app.get('/', function (req, res) {
-  res.render('index', { title: 'index'})
- })
+// Code to run if we're in a worker process
+} else {
+  var workerId = 0
+  if (!cluster.isMaster) {
+    workerId = cluster.worker.id
+  }
+  // Creates and serves mean application
+  mean.serve({ workerid: workerId }, function (app) {
+    var config = app.getConfig()
+    var port = config.https && config.https.port ? config.https.port : config.http.port
+    debug(`MEAN app started on port ${port} (${process.env.NODE_ENV}) with cluster worker id ${workerId}`)
 
+    deferred.resolve(app)
+  })
+}
 
-// include routes
-var routes = require('./routes/index');
-app.use('/', routes);
-
-// catch 404 and forward to error handler
-app.use(function(req, res, next) {
-  var err = new Error('File Not Found');
-  err.status = 404;
-  next(err);
-});
-
-// error handler
-// define as the last app.use callback
-app.use(function(err, req, res, next) {
-  res.status(err.status || 500);
-  res.render('error', {
-    message: err.message,
-    error: {}
-  });
-});
-
-// listen on port 3000
-app.listen(3000, function () {
-  console.log('Express app listening on port 3000');
-});
+module.exports = deferred.promise
